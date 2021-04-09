@@ -24,6 +24,9 @@
 # example:      ./ossperf.sh -n 5 -s 1048576 # 5 files of 1 MB size each
 # ----------------------------------------------------------------------------
 
+echo $@
+
+export PERL_BADLANG=0
 function usage
 {
 echo "$SCRIPT -n files -s size [-b <bucket>] [-u] [-a] [-m <alias>] [-z] [-g] [-w] [-l <location>] [-d <url>] [-k] [-p] [-o]
@@ -32,6 +35,7 @@ This script analyzes the performance and data integrity of S3-compatible
 storage services 
 
 Arguments:
+-c : s3cmd config file
 -h : show this message on screen
 -n : number of files to be created
 -s : size of the files to be created in bytes (max 16777216 = 16 MB)
@@ -111,6 +115,9 @@ OUTPUT_FILE=0
 S4CMD_CLIENT=0
 S4CMD_CLIENT_ENDPOINT_URL=
 S3PERF_CLIENT=0
+S3CMD_CONFIG=~/.s3cmd
+S3CMD_OUTPUTDIR=$(pwd)
+
 
 RED='\033[0;31m'          # Red color
 NC='\033[0m'              # No color
@@ -119,6 +126,7 @@ YELLOW='\033[0;33m'       # Yellow color
 BLUE='\033[0;34m'         # Blue color
 WHITE='\033[0;37m'        # White color
 
+
 # If no arguments are provided at all...
 if [ $# -eq 0 ]; then
     echo -e "${RED}[ERROR] No arguments provided! ${OPTARG} ${NC}" 
@@ -126,9 +134,10 @@ if [ $# -eq 0 ]; then
     usage
 fi
 
-while getopts "hn:s:b:uam:zgwrl:d:kpo" ARG ; do
+while getopts "hc:n:s:b:uam:zgwrl:d:kpo:" ARG ; do
   case $ARG in
     h) usage ;;
+    c) S3CMD_CONFIG=${OPTARG} ;;
     n) NUM_FILES=${OPTARG} ;;
     s) SIZE_FILES=${OPTARG} ;;
     # If the flag has been set => $NOT_CLEAN_UP gets value 1
@@ -148,13 +157,17 @@ while getopts "hn:s:b:uam:zgwrl:d:kpo" ARG ; do
        ENDPOINT_URL_ADDRESS=${OPTARG} ;;
     k) NOT_CLEAN_UP=1 ;;
     p) PARALLEL=1 ;;
-    o) OUTPUT_FILE=1 ;;
+    o) OUTPUT_FILE=1 
+       S3CMD_OUTPUTDIR=${OPTARG};;
     *) echo -e "${RED}[ERROR] Invalid option! ${OPTARG} ${NC}" 
        exit 1
        ;;
   esac
 done
 
+S3CMD="s3cmd -c $S3CMD_CONFIG"
+$S3CMD ls
+echo "outputdir: ${S3CMD_OUTPUTDIR}"
 
 # If neither using the Swift client, the Minio client (mc), the Azure client (az), the s4cmd client 
 # or the Google storage client (gsutil) has been specified via command line parameter...
@@ -207,7 +220,7 @@ if ! [ -x "$(command -v s3cmd)" ]; then
     exit 1
 else
     echo -e "${YELLOW}[INFO] The tool s3cmd has been found on this system.${NC}"
-    s3cmd --version
+    $S3CMD --version
 fi
 
 if ! [ -x "$(command -v bc)" ]; then
@@ -371,7 +384,10 @@ DIRECTORY="testfiles"
 # "Bucket names cannot contain periods"
 
 # Filename of the output file
-OUTPUT_FILENAME=results.csv
+OUTPUT_FILENAME=${S3CMD_OUTPUTDIR}/results.csv
+echo $S3CMD_OUTPUTDIR
+echo $OUTPUT_FILENAME
+
 
 # If the user did not want to specify the bucket name with the parameter -b <bucket>, ossperf will use the default bucket name
 if [ "$BUCKETNAME_PARAMETER" -eq 0 ] ; then
@@ -394,7 +410,7 @@ fi
 
 # Validate that...
 # SIZE_FILES is not 0 and not bigger than 16777216
-if [[ "$SIZE_FILES" -lt 4096 || "$SIZE_FILES" -gt 16777216 ]] ; then
+if [[ "$SIZE_FILES" -lt 4096 || "$SIZE_FILES" -gt 1048576000 ]] ; then
    echo -e "${RED}[ERROR] Attention: The size of the file(s) must be between 4096 and 16777216 Bytes!${NC}"
    usage
    exit 1
@@ -515,7 +531,7 @@ elif [ "$S4CMD_CLIENT" -eq 1 ] ; then
 # <-=-=-=-> s3cmd (start)  <-=-=-=->
 else
   # use the s3cmd cli
-  if s3cmd ls ; then
+  if $S3CMD ls ; then
     echo -e "${GREEN}[OK] The storage service can be accessed via the tool s3cmd.${NC}"
   else
     echo -e "${RED}[ERROR] Unable to access the storage service via the tool s3cmd.${NC}" && exit 1
@@ -655,14 +671,14 @@ else
   # use the s3cmd cli
   if [ "$BUCKET_LOCATION" -eq 1 ] ; then
     # If a specific site (location) for the bucket has been specified via command line parameter
-    if s3cmd mb s3://$BUCKET --bucket-location=$BUCKET_LOCATION_SITE ; then
+    if $S3CMD mb s3://$BUCKET --bucket-location=$BUCKET_LOCATION_SITE ; then
       echo -e "${GREEN}[OK] Bucket ${BUCKET} has been created with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to create the bucket ${BUCKET} with s3cmd.${NC}" && exit 1
     fi
   else
     # If no specific site (location) for the bucket has been specified via command line parameter
-    if s3cmd mb s3://$BUCKET ; then
+    if $S3CMD mb s3://$BUCKET ; then
       echo -e "${GREEN}[OK] Bucket ${BUCKET} has been created with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to create the bucket ${BUCKET} with s3cmd.${NC}" && exit 1
@@ -693,7 +709,7 @@ if [ "$S3PERF_CLIENT" -eq 1 ] ; then
   # until LOOP_VARIABLE is greater than 0 
   while [ $LOOP_VARIABLE -gt "0" ]; do 
     # Check if the Bucket is accessible
-    if s3cmd ls s3://$BUCKET ; then
+    if $S3CMD ls s3://$BUCKET ; then
       echo -e "${GREEN}[OK] The bucket is available (checked with s3cmd).${NC}"
       # Skip entire rest of loop.
       break
@@ -930,7 +946,7 @@ if [ "$PARALLEL" -eq 1 ] ; then
   else
   # use the s3cmd CLI
     # Upload files in parallel
-    if find $DIRECTORY/*.txt | parallel s3cmd put {} s3://$BUCKET ; then
+    if find $DIRECTORY/*.txt | parallel $S3CMD put {} s3://$BUCKET ; then
       echo -e "${GREEN}[OK] Files have been uploaded in parallel with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to upload the files in parallel with s3cmd.${NC}" && exit 1
@@ -1015,7 +1031,7 @@ else
   else
   # use the s3cmd cli
     # Upload files sequentially
-    if s3cmd put $DIRECTORY/*.txt s3://$BUCKET ; then
+    if $S3CMD put $DIRECTORY/*.txt s3://$BUCKET ; then
       echo -e "${GREEN}[OK] Files have been uploaded sequentially with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to upload the files sequentially with s3cmd.${NC}" && exit 1
@@ -1127,7 +1143,7 @@ elif [ "$S4CMD_CLIENT" -eq 1 ] ; then
   fi
 else
   # use the s3cmd cli
-  if s3cmd ls s3://$BUCKET ; then
+  if $S3CMD ls s3://$BUCKET ; then
     echo -e "${GREEN}[OK] The list of objects inside ${BUCKET} has been fetched with s3cmd.${NC}"
   else
     echo -e "${RED}[ERROR] Unable to fetch the list of objects inside ${BUCKET} with s3cmd.${NC}" && exit 1
@@ -1221,7 +1237,7 @@ if [ "$PARALLEL" -eq 1 ] ; then
   # use the s3cmd cli
     # Download files in parallel
     # This removes the subfolder name(s) in the output of find: -type f -printf  "%f\n"
-    if find ${DIRECTORY}/*.txt -type f -printf "%f\n" | parallel s3cmd get --force s3://$BUCKET/{} $DIRECTORY/ ; then
+    if find ${DIRECTORY}/*.txt -type f -printf "%f\n" | parallel $S3CMD get --force s3://$BUCKET/{} $DIRECTORY/ ; then
       echo -e "${GREEN}[OK] Files have been downloaded in parallel with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to download the files in parallel with s3cmd.${NC}" && exit 1
@@ -1290,7 +1306,7 @@ else
   else
   # use the s3cmd CLI
     # Download files sequentially
-    if s3cmd get --force s3://$BUCKET/*.txt $DIRECTORY/ ; then
+    if $S3CMD get --force s3://$BUCKET/*.txt $DIRECTORY/ ; then
       echo -e "${GREEN}[OK] Files have been downloaded sequentially with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to download the files sequentially with s3cmd.${NC}" && exit 1
@@ -1420,7 +1436,7 @@ if [ "$PARALLEL" -eq 1 ] ; then
   # use the s3cmd CLI
     #  Erase files (objects) inside the bucket in parallel
     # -type f -printf "%f\n" gives back just the filename and not the folder information
-    if find $DIRECTORY/*.txt -type f -printf "%f\n" | parallel s3cmd del s3://$BUCKET/{} ; then
+    if find $DIRECTORY/*.txt -type f -printf "%f\n" | parallel $S3CMD del s3://$BUCKET/{} ; then
       echo -e "${GREEN}[OK] Files inside the bucket ${BUCKET} have been erased in parallel with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to erase the files inside the bucket ${BUCKET} in parallel with s3cmd.${NC}" && exit 1
@@ -1507,7 +1523,7 @@ else
   else
   # use the s3cmd CLI
     # Erase files (objects) inside the bucket sequentially
-    if s3cmd del s3://$BUCKET/* ; then
+    if $S3CMD del s3://$BUCKET/* ; then
       echo -e "${GREEN}[OK] Files inside the bucket ${BUCKET} have been erased sequentially with s3cmd.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to erase the files inside the bucket ${BUCKET} sequentially with s3cmd.${NC}" && exit 1
@@ -1606,8 +1622,9 @@ elif [ "$S4CMD_CLIENT" -eq 1 ] ; then
   fi
 else
   # use the s3cmd CLI
-  if s3cmd rb --force --recursive s3://$BUCKET ; then
+  if $S3CMD rb --force --recursive s3://$BUCKET ; then
     echo -e "${GREEN}[OK] Bucket ${BUCKET} has been erased with s3cmd.${NC}"
+    $S3CMD ls
   else
     echo -e "${RED}[ERROR] Unable to erase the bucket ${BUCKET} with s3cmd.${NC}" && exit 1
   fi
@@ -1646,19 +1663,21 @@ echo ''
 echo '    Bandwidth during the upload of the files:           '${BANDWIDTH_OBJECTS_UPLOAD} Mbps
 echo '    Bandwidth during the download of the files:         '${BANDWIDTH_OBJECTS_DOWNLOAD} Mbps
 
+echo "Output Filename: ${OUTPUT_FILENAME}"
+
 # Create an output file only of the command line parameter was set => value of OUTPUT_FILE is not equal 0
 if ([[ "$OUTPUT_FILE" -ne 0 ]]) ; then
   # If the output file did not already exist...
   if [ ! -f ${OUTPUT_FILENAME} ] ; then  
     # .. create in the first line the header first
-    if echo -e "DATE TIME NUM_FILES SIZE_FILES TIME_CREATE_BUCKET TIME_OBJECTS_UPLOAD TIME_OBJECTS_LIST TIME_OBJECTS_DOWNLOAD TIME_ERASE_OBJECTS TIME_ERASE_BUCKET TIME_SUM BANDWIDTH_OBJECTS_UPLOAD BANDWIDTH_OBJECTS_DOWNLOAD" >> ${OUTPUT_FILENAME} ; then
+    if echo -e "DATE TIME S3CMDCONFIG NUM_FILES SIZE_FILES TIME_CREATE_BUCKET TIME_OBJECTS_UPLOAD TIME_OBJECTS_LIST TIME_OBJECTS_DOWNLOAD TIME_ERASE_OBJECTS TIME_ERASE_BUCKET TIME_SUM BANDWIDTH_OBJECTS_UPLOAD BANDWIDTH_OBJECTS_DOWNLOAD BUCKETNAME" >> ${OUTPUT_FILENAME} ; then
       echo -e "${GREEN}[OK] A new output file ${OUTPUT_FILENAME} has been created.${NC}"
     else
       echo -e "${RED}[ERROR] Unable to create a new output file ${OUTPUT_FILENAME}.${NC}" && exit 1
     fi
   fi
   # If the output file did already exist...
-  if echo -e "`date +%Y-%m-%d` `date +%H:%M:%S` ${NUM_FILES} ${SIZE_FILES} ${TIME_CREATE_BUCKET} ${TIME_OBJECTS_UPLOAD} ${TIME_OBJECTS_LIST} ${TIME_OBJECTS_DOWNLOAD} ${TIME_ERASE_OBJECTS} ${TIME_ERASE_BUCKET} ${TIME_SUM} ${BANDWIDTH_OBJECTS_UPLOAD} ${BANDWIDTH_OBJECTS_DOWNLOAD}" >> ${OUTPUT_FILENAME} ; then
+  if echo -e "`date +%Y-%m-%d` `date +%H:%M:%S` ${S3CMD_CONFIG} ${NUM_FILES} ${SIZE_FILES} ${TIME_CREATE_BUCKET} ${TIME_OBJECTS_UPLOAD} ${TIME_OBJECTS_LIST} ${TIME_OBJECTS_DOWNLOAD} ${TIME_ERASE_OBJECTS} ${TIME_ERASE_BUCKET} ${TIME_SUM} ${BANDWIDTH_OBJECTS_UPLOAD} ${BANDWIDTH_OBJECTS_DOWNLOAD} ${BUCKET}" >> ${OUTPUT_FILENAME} ; then
     echo -e "${GREEN}[OK] The results of this benchmark run have been appended to the output file ${OUTPUT_FILENAME}.${NC}"
   else
     echo -e "${RED}[ERROR] Unable to append the results of this benchmark run to the output file ${OUTPUT_FILENAME}.${NC}" && exit 1
